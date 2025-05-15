@@ -11,16 +11,19 @@ deps:
 	@mkdir -p packages
 	@if [ ! -d packages/infrastructure ]; then \
 		git clone git@github.com:petrixs/cr-infrastructure.git packages/infrastructure; \
+		cd packages/infrastructure && git checkout v1.0.0; \
 	else \
 		echo 'infrastructure уже существует'; \
 	fi
 	@if [ ! -d packages/transport-bus ]; then \
 		git clone git@github.com:petrixs/cr-transport-bus.git packages/transport-bus; \
+		cd packages/transport-bus && git checkout v1.0.0; \
 	else \
 		echo 'transport-bus уже существует'; \
 	fi
-	@if [ ! -d packages/cr-exchanges ]; then \
+	@if [ ! -d packages/exchanges ]; then \
 		git clone git@github.com:petrixs/cr-exchanges.git packages/exchanges; \
+		cd packages/exchanges && git checkout v1.0.0; \
 	else \
-		echo 'cr-exchanges уже существует'; \
+		echo 'exchanges уже существует'; \
 	fi 
