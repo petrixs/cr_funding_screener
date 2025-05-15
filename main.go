@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"strconv"
+	"time"
 
 	"github.com/joho/godotenv"
 	exchanges "github.com/petrixs/cr-exchanges"
@@ -44,9 +45,18 @@ func main() {
 		}
 	}
 
-	conn, err := amqp091.Dial(amqpURL)
+	var conn *amqp091.Connection
+	var err error
+	for i := 1; i <= 20; i++ {
+		conn, err = amqp091.Dial(amqpURL)
+		if err == nil {
+			break
+		}
+		log.Printf("Попытка %d: ошибка подключения к RabbitMQ: %v", i, err)
+		time.Sleep(3 * time.Second)
+	}
 	if err != nil {
-		log.Fatalf("Ошибка подключения к RabbitMQ: %v", err)
+		log.Fatalf("Не удалось подключиться к RabbitMQ после 20 попыток: %v", err)
 	}
 	defer conn.Close()
 
@@ -55,6 +65,7 @@ func main() {
 	// Горутина для отправки ставок в RabbitMQ
 	go func() {
 		for rate := range fundingChan {
+			log.Printf("Публикую в RabbitMQ: %+v", rate)
 			err := rabbit.PublishProtoJSONWithTTL(
 				context.Background(), conn, queueName, rate, fundingTTL,
 			)
@@ -83,7 +94,7 @@ func main() {
 		gate,
 		kucoin,
 		bingx,
-	})
+	}, fundingChan)
 	log.Println("Бот создан")
 
 	log.Println("Запуск бота...")

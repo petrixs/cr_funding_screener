@@ -14,13 +14,15 @@ import (
 	"encoding/json"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
-	"github.com/petrixs/cr-exchanges"
+	exchanges "github.com/petrixs/cr-exchanges"
+	"github.com/petrixs/cr-transport-bus/proto"
 )
 
 type Bot struct {
-	bot       *tgbotapi.BotAPI
-	exchanges []exchanges.Exchange
-	cache     *exchanges.RatesCache
+	bot         *tgbotapi.BotAPI
+	exchanges   []exchanges.Exchange
+	cache       *exchanges.RatesCache
+	fundingChan chan<- *proto.FundingRate
 }
 
 var (
@@ -132,7 +134,7 @@ func getDefaultThreshold() float64 {
 	return f
 }
 
-func NewBot(token string, exs []exchanges.Exchange) *Bot {
+func NewBot(token string, exs []exchanges.Exchange, fundingChan chan<- *proto.FundingRate) *Bot {
 	log.Println("Создание нового экземпляра бота...")
 	bot, err := tgbotapi.NewBotAPI(token)
 	if err != nil {
@@ -141,9 +143,10 @@ func NewBot(token string, exs []exchanges.Exchange) *Bot {
 
 	log.Printf("Бот создан: @%s", bot.Self.UserName)
 	return &Bot{
-		bot:       bot,
-		exchanges: exs,
-		cache:     exchanges.GetGlobalCache(),
+		bot:         bot,
+		exchanges:   exs,
+		cache:       exchanges.GetGlobalCache(),
+		fundingChan: fundingChan,
 	}
 }
 
@@ -190,6 +193,24 @@ func (b *Bot) updateAllRates() {
 			defer wg.Done()
 			if err := b.cache.UpdateRates(exchange); err != nil {
 				log.Printf("Ошибка обновления ставок для %s: %v", exchange.GetName(), err)
+				return
+			}
+			// Получаем актуальные ставки после обновления
+			rates := b.cache.GetRates(exchange.GetName())
+			for _, rate := range rates {
+				// Преобразуем exchanges.FundingRate в proto.FundingRate
+				pr := &proto.FundingRate{
+					Exchange:  exchange.GetName(),
+					Symbol:    rate.Symbol,
+					Rate:      rate.Rate,
+					Timestamp: time.Now().Unix(),
+				}
+				select {
+				case b.fundingChan <- pr:
+					log.Printf("[RabbitMQ] Отправлена ставка: %s %s %.6f", pr.Exchange, pr.Symbol, pr.Rate)
+				default:
+					log.Printf("[RabbitMQ] Канал переполнен, ставка пропущена: %s %s %.6f", pr.Exchange, pr.Symbol, pr.Rate)
+				}
 			}
 		}(ex)
 	}
