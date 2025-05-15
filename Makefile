@@ -18,4 +18,9 @@ deps:
 		git clone git@github.com:petrixs/cr-transport-bus.git packages/transport-bus; \
 	else \
 		echo 'transport-bus уже существует'; \
+	fi
+	@if [ ! -d packages/cr-exchanges ]; then \
+		git clone git@github.com:petrixs/cr-exchanges.git packages/exchanges; \
+	else \
+		echo 'cr-exchanges уже существует'; \
 	fi 
