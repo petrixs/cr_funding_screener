@@ -6,7 +6,6 @@ import (
 
 	"github.com/joho/godotenv"
 	"github.com/petrixs/cr_funding_screener/internal/bot"
-	"github.com/petrixs/cr_funding_screener/packages/exchanges"
 )
 
 func main() {

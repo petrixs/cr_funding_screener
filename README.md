@@ -91,8 +91,8 @@ OKX_PASSPHRASE=your_okx_passphrase
 BINGX_API_KEY=your_bingx_api_key
 BINGX_SECRET_KEY=your_bingx_secret_key
 
-# Таймзона (например, Europe/Moscow)
-TIMEZONE=Europe/Moscow
+# Таймзона (например, Europe/Kyiv)
+TIMEZONE=Europe/Kyiv
 ```
 
 **Важно:**

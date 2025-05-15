@@ -14,7 +14,6 @@ import (
 	"encoding/json"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
-	"github.com/petrixs/cr_funding_screener/packages/exchanges"
 )
 
 type Bot struct {

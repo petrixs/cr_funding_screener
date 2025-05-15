@@ -1,6 +1,6 @@
 module github.com/petrixs/cr_funding_screener
 
-go 1.21
+go 1.24.2
 
 require (
 	github.com/go-telegram-bot-api/telegram-bot-api/v5 v5.5.1
