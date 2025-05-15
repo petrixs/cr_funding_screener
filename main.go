@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"os"
+	"strconv"
 
 	"github.com/joho/godotenv"
 	exchanges "github.com/petrixs/cr-exchanges"
@@ -30,6 +31,19 @@ func main() {
 	if amqpURL == "" {
 		log.Fatal("AMQP_URL не установлен")
 	}
+
+	queueName := os.Getenv("FUNDING_QUEUE")
+	if queueName == "" {
+		queueName = "funding_rates"
+	}
+
+	fundingTTL := 0
+	if ttlStr := os.Getenv("FUNDING_TTL_MS"); ttlStr != "" {
+		if v, err := strconv.Atoi(ttlStr); err == nil {
+			fundingTTL = v
+		}
+	}
+
 	conn, err := amqp091.Dial(amqpURL)
 	if err != nil {
 		log.Fatalf("Ошибка подключения к RabbitMQ: %v", err)
@@ -42,7 +56,7 @@ func main() {
 	go func() {
 		for rate := range fundingChan {
 			err := rabbit.PublishProtoJSONWithTTL(
-				context.Background(), conn, "funding_rates", rate, 0, // TTL=0 бессрочно
+				context.Background(), conn, queueName, rate, fundingTTL,
 			)
 			if err != nil {
 				log.Printf("Ошибка отправки в RabbitMQ: %v", err)
