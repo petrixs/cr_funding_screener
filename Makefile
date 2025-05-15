@@ -17,7 +17,7 @@ deps:
 	fi
 	@if [ ! -d packages/transport-bus ]; then \
 		git clone git@github.com:petrixs/cr-transport-bus.git packages/transport-bus; \
-		cd packages/transport-bus && git checkout v1.0.0; \
+		cd packages/transport-bus && git checkout v1.0.1; \
 	else \
 		echo 'transport-bus уже существует'; \
 	fi

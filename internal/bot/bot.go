@@ -199,11 +199,17 @@ func (b *Bot) updateAllRates() {
 			rates := b.cache.GetRates(exchange.GetName())
 			for _, rate := range rates {
 				// Преобразуем exchanges.FundingRate в proto.FundingRate
+				var timestamp int64
+				if rate.NextFunding != "Неизвестно" {
+					if t, err := time.Parse(time.RFC3339, rate.NextFunding); err == nil {
+						timestamp = t.Unix()
+					}
+				}
 				pr := &proto.FundingRate{
 					Exchange:  exchange.GetName(),
 					Symbol:    rate.Symbol,
 					Rate:      rate.Rate,
-					Timestamp: time.Now().Unix(),
+					Timestamp: timestamp,
 				}
 				select {
 				case b.fundingChan <- pr:

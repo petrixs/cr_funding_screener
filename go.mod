@@ -6,7 +6,7 @@ require (
 	github.com/go-telegram-bot-api/telegram-bot-api/v5 v5.5.1
 	github.com/joho/godotenv v1.5.1
 	github.com/petrixs/cr-exchanges v1.0.0
-	github.com/petrixs/cr-transport-bus v1.0.0
+	github.com/petrixs/cr-transport-bus v1.0.1
 	github.com/rabbitmq/amqp091-go v1.10.0
 )
 
