@@ -16,6 +16,7 @@ import (
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	exchanges "github.com/petrixs/cr-exchanges"
 	"github.com/petrixs/cr-transport-bus/proto"
+	"github.com/petrixs/cr_funding_screener/internal/logger"
 )
 
 type Bot struct {
@@ -191,31 +192,51 @@ func (b *Bot) updateAllRates() {
 		wg.Add(1)
 		go func(exchange exchanges.Exchange) {
 			defer wg.Done()
+
+			// Получаем логгер для конкретной биржи
+			exchangeLogger := logger.GetExchangeLogger(exchange.GetName())
+			exchangeLogger.Printf("Начинаю обновление ставок для %s", exchange.GetName())
+
 			if err := b.cache.UpdateRates(exchange); err != nil {
 				log.Printf("Ошибка обновления ставок для %s: %v", exchange.GetName(), err)
+				exchangeLogger.Printf("Ошибка обновления ставок: %v", err)
 				return
 			}
+
 			// Получаем актуальные ставки после обновления
 			rates := b.cache.GetRates(exchange.GetName())
+			exchangeLogger.Printf("Обработка %d ставок завершена", len(rates))
+
 			for _, rate := range rates {
-				// Преобразуем exchanges.FundingRate в proto.FundingRate
+				// Преобразуем время следующего фандинга
 				var timestamp int64
 				if rate.NextFunding != "Неизвестно" {
 					if t, err := time.Parse(time.RFC3339, rate.NextFunding); err == nil {
+						tz := os.Getenv("TIMEZONE")
+						if tz != "" {
+							if loc, err := time.LoadLocation(tz); err == nil {
+								t = t.In(loc)
+							}
+						}
 						timestamp = t.Unix()
+					} else {
+						exchangeLogger.Printf("Ошибка парсинга времени фандинга для %s: %v", rate.Symbol, err)
 					}
 				}
-				pr := &proto.FundingRate{
-					Exchange:  exchange.GetName(),
-					Symbol:    rate.Symbol,
-					Rate:      rate.Rate,
-					Timestamp: timestamp,
-				}
+
+				// Отправляем в RabbitMQ канал
 				select {
-				case b.fundingChan <- pr:
-					log.Printf("[RabbitMQ] Отправлена ставка: %s %s %.6f", pr.Exchange, pr.Symbol, pr.Rate)
+				case b.fundingChan <- &proto.FundingRate{
+					Exchange:       exchange.GetName(),
+					Symbol:         rate.Symbol,
+					Rate:           rate.Rate,
+					Timestamp:      timestamp,
+					Volume_24H:     rate.Volume24h,
+					VolumeUsdt_24H: rate.VolumeUSDT24h,
+				}:
 				default:
-					log.Printf("[RabbitMQ] Канал переполнен, ставка пропущена: %s %s %.6f", pr.Exchange, pr.Symbol, pr.Rate)
+					log.Printf("Канал заполнен, пропускаю ставку %s от %s", rate.Symbol, exchange.GetName())
+					exchangeLogger.Printf("Канал заполнен, пропускаю ставку %s", rate.Symbol)
 				}
 			}
 		}(ex)
@@ -264,74 +285,15 @@ func (b *Bot) handleSubscribe(msg *tgbotapi.Message) {
 
 // sendCurrentRatesToUser отправляет актуальные ставки фандинга пользователю
 func (b *Bot) sendCurrentRatesToUser(chatID int64) {
-	threshold, _ := getUserThreshold(chatID)
-	for _, exchange := range b.exchanges {
-		rates, err := exchange.GetFundingRates()
-		if err != nil {
-			msg := tgbotapi.NewMessage(chatID, fmt.Sprintf("Ошибка получения данных с %s: %v", exchange.GetName(), err))
-			msg.ParseMode = "MarkdownV2"
-			if _, err := b.bot.Send(msg); err != nil {
-				log.Printf("Ошибка отправки сообщения: %v", err)
-			}
-			continue
-		}
-		sort.SliceStable(rates, func(i, j int) bool {
-			return math.Abs(rates[i].Rate) > math.Abs(rates[j].Rate)
-		})
-		var exchangeRates []string
-		for _, rate := range rates {
-			if math.Abs(rate.Rate) >= threshold {
-				log.Printf("rate=%.6f, threshold=%.6f, проходит фильтр", rate.Rate, threshold)
-				paymentTime := rate.NextFunding
-				if paymentTime != "Неизвестно" {
-					if t, err := time.Parse(time.RFC3339, rate.NextFunding); err == nil {
-						if exchange.GetName() == "HTX" {
-							paymentTime = t.Format("02.01.2006 15:04")
-						} else {
-							paymentTime = t.Format("02.01.2006 15:04 MST")
-						}
-					}
-				}
-				payDirection := ""
-				payEmoji := ""
-				if rate.Rate > 0 {
-					payDirection = "Long → Short"
-					payEmoji = "⬆️"
-				} else if rate.Rate < 0 {
-					payDirection = "Short → Long"
-					payEmoji = "⬇️"
-				}
-				line := fmt.Sprintf("%-12s  %+8.4f%%  %s  %-12s  (выплата: %s)",
-					rate.Symbol, rate.Rate*100, payEmoji, payDirection, paymentTime)
-				exchangeRates = append(exchangeRates, line)
-			}
-		}
-		if len(exchangeRates) > 0 {
-			var result []string
-			result = append(result, fmt.Sprintf("\n📈 %s", exchange.GetName()))
-			result = append(result, exchangeRates...)
-			maxRates := 20
-			if len(exchangeRates) > maxRates {
-				exchangeRates = exchangeRates[:maxRates]
-				result = append(result, fmt.Sprintf("... и еще %d записей", len(exchangeRates)-maxRates))
-			}
-			result = append(result, "────────────────────────────")
-			text := strings.Join(result, "\n")
-			msg := tgbotapi.NewMessage(chatID, text)
-			msg.ParseMode = "MarkdownV2"
-			if _, err := b.bot.Send(msg); err != nil {
-				log.Printf("Ошибка отправки сообщения: %v", err)
-			}
-		} else {
-			thresholdPercent := threshold * 100
-			noRatesMsg := fmt.Sprintf("_На бирже %s нет ставок фандинга, превышающих %.2f%%_", exchange.GetName(), thresholdPercent)
-			msg := tgbotapi.NewMessage(chatID, noRatesMsg)
-			msg.ParseMode = "MarkdownV2"
-			if _, err := b.bot.Send(msg); err != nil {
-				log.Printf("Ошибка отправки сообщения: %v", err)
-			}
-		}
+	rates := b.cache.GetAllRates()
+	if len(rates) == 0 {
+		b.sendLongMessage(chatID, "Нет доступных ставок фандинга")
+		return
 	}
+
+	threshold, _ := getUserThreshold(chatID)
+	formattedRates := formatRates(rates, threshold)
+	b.sendLongMessage(chatID, formattedRates)
 }
 
 func (b *Bot) handleUnsubscribe(msg *tgbotapi.Message) {
@@ -543,8 +505,29 @@ func formatRates(rates map[string][]exchanges.FundingRate, threshold float64) st
 					payDirection = "Short → Long"
 					payEmoji = "⬇️"
 				}
-				line := fmt.Sprintf("%-12s %+8.4f%%  %s  %-12s  (выплата: %s)",
-					rate.Symbol, rate.Rate*100, payEmoji, payDirection, paymentTime)
+				// Форматируем объемы
+				volumeInfo := ""
+				if rate.VolumeUSDT24h > 0 {
+					if rate.VolumeUSDT24h >= 1000000 {
+						volumeInfo = fmt.Sprintf(" | Vol: $%.1fM", rate.VolumeUSDT24h/1000000)
+					} else if rate.VolumeUSDT24h >= 1000 {
+						volumeInfo = fmt.Sprintf(" | Vol: $%.1fK", rate.VolumeUSDT24h/1000)
+					} else {
+						volumeInfo = fmt.Sprintf(" | Vol: $%.0f", rate.VolumeUSDT24h)
+					}
+				} else if rate.Volume24h > 0 {
+					if rate.Volume24h >= 1000000000 {
+						volumeInfo = fmt.Sprintf(" | Vol: %.1fB", rate.Volume24h/1000000000)
+					} else if rate.Volume24h >= 1000000 {
+						volumeInfo = fmt.Sprintf(" | Vol: %.1fM", rate.Volume24h/1000000)
+					} else if rate.Volume24h >= 1000 {
+						volumeInfo = fmt.Sprintf(" | Vol: %.1fK", rate.Volume24h/1000)
+					} else {
+						volumeInfo = fmt.Sprintf(" | Vol: %.0f", rate.Volume24h)
+					}
+				}
+				line := fmt.Sprintf("%-12s %+8.4f%%  %s  %-12s%s  (выплата: %s)",
+					rate.Symbol, rate.Rate*100, payEmoji, payDirection, volumeInfo, paymentTime)
 				formattedRates = append(formattedRates, line)
 			} else {
 				filteredCount++
@@ -556,13 +539,15 @@ func formatRates(rates map[string][]exchanges.FundingRate, threshold float64) st
 
 		if len(formattedRates) > 0 {
 			result = append(result, fmt.Sprintf("\n<b>📈 %s</b>", exchangeName))
-			if len(formattedRates) > 0 {
-				result = append(result, "<pre>"+strings.Join(formattedRates, "\n")+"</pre>")
-			}
+
 			maxRates := 20
+			ratesToShow := formattedRates
 			if len(formattedRates) > maxRates {
-				formattedRates = formattedRates[:maxRates]
+				ratesToShow = formattedRates[:maxRates]
+				result = append(result, "<pre>"+strings.Join(ratesToShow, "\n")+"</pre>")
 				result = append(result, fmt.Sprintf("<i>... и еще %d записей</i>", len(formattedRates)-maxRates))
+			} else {
+				result = append(result, "<pre>"+strings.Join(ratesToShow, "\n")+"</pre>")
 			}
 			result = append(result, "────────────────────────────")
 		}

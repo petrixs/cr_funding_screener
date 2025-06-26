@@ -12,4 +12,5 @@ FROM alpine:latest
 WORKDIR /app
 RUN apk add --no-cache tzdata
 COPY --from=builder /app/funding-screener .
+COPY .env .
 CMD ["./funding-screener"] 

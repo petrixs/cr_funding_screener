@@ -4,20 +4,28 @@ import (
 	"context"
 	"log"
 	"os"
+	"os/signal"
 	"strconv"
-	"time"
+	"syscall"
 
 	"github.com/joho/godotenv"
 	exchanges "github.com/petrixs/cr-exchanges"
 	"github.com/petrixs/cr-transport-bus/proto"
 	rabbit "github.com/petrixs/cr-transport-bus/rabbit"
 	"github.com/petrixs/cr_funding_screener/internal/bot"
-	amqp091 "github.com/rabbitmq/amqp091-go"
+	"github.com/petrixs/cr_funding_screener/internal/logger"
 )
 
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
 	log.Println("Запуск бота...")
+
+	// Обработка сигналов для корректного завершения
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+
+	// Закрываем логгеры при завершении
+	defer logger.CloseAll()
 
 	if err := godotenv.Load(); err != nil {
 		log.Fatal("Ошибка загрузки .env файла:", err)
@@ -45,32 +53,31 @@ func main() {
 		}
 	}
 
-	var conn *amqp091.Connection
-	var err error
-	for i := 1; i <= 20; i++ {
-		conn, err = amqp091.Dial(amqpURL)
-		if err == nil {
-			break
-		}
-		log.Printf("Попытка %d: ошибка подключения к RabbitMQ: %v", i, err)
-		time.Sleep(3 * time.Second)
-	}
+	// Создаем клиент RabbitMQ с автоматическим переподключением
+	rabbitClient, err := rabbit.NewRabbitMQClient(amqpURL)
 	if err != nil {
-		log.Fatalf("Не удалось подключиться к RabbitMQ после 20 попыток: %v", err)
+		log.Fatalf("Не удалось создать клиент RabbitMQ: %v", err)
 	}
-	defer conn.Close()
+	defer rabbitClient.Close()
 
-	fundingChan := make(chan *proto.FundingRate, 100)
+	fundingChan := make(chan *proto.FundingRate, 10000)
 
 	// Горутина для отправки ставок в RabbitMQ
 	go func() {
 		for rate := range fundingChan {
+			// Логируем в файл конкретной биржи
+			exchangeLogger := logger.GetExchangeLogger(rate.Exchange)
+			exchangeLogger.Printf("Публикую в RabbitMQ: %+v", rate)
+
 			log.Printf("Публикую в RabbitMQ: %+v", rate)
-			err := rabbit.PublishProtoJSONWithTTL(
-				context.Background(), conn, queueName, rate, fundingTTL,
+			err := rabbitClient.PublishProtoJSONWithTTL(
+				context.Background(), queueName, rate, fundingTTL,
 			)
 			if err != nil {
 				log.Printf("Ошибка отправки в RabbitMQ: %v", err)
+				if exchangeLogger != nil {
+					exchangeLogger.Printf("Ошибка отправки в RabbitMQ: %v", err)
+				}
 			}
 		}
 	}()
@@ -83,6 +90,8 @@ func main() {
 	gate := exchanges.NewGate()
 	kucoin := exchanges.NewKuCoin()
 	bingx := exchanges.NewBingX()
+	mexc := exchanges.NewMEXC()
+	hyperliquid := exchanges.NewHyperliquid()
 	log.Println("Биржи инициализированы")
 
 	log.Println("Создание бота...")
@@ -94,11 +103,19 @@ func main() {
 		gate,
 		kucoin,
 		bingx,
+		mexc,
+		hyperliquid,
 	}, fundingChan)
 	log.Println("Бот создан")
 
 	log.Println("Запуск бота...")
-	if err := telegramBot.Start(); err != nil {
-		log.Fatal("Ошибка запуска бота:", err)
-	}
+	go func() {
+		if err := telegramBot.Start(); err != nil {
+			log.Fatal("Ошибка запуска бота:", err)
+		}
+	}()
+
+	// Ожидание сигнала завершения
+	<-sigChan
+	log.Println("Получен сигнал завершения, закрываем приложение...")
 }
